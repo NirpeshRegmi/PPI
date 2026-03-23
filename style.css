@@ -1,0 +1,207 @@
+@import url('https://fonts.googleapis.com/css?family=Open+Sans&display=swap');
+
+:root {
+  --bg: #f5f2ee;
+  --sidebar: #2a2a28;
+  --border: #2e2e2a;
+  --accent: #1f1f1c;
+  --nav: #1f1f1c;
+  --text: #1f1f1c;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body { 
+  min-height: 100vh;
+  background-color: var(--bg);
+  font-family: 'Georgia', serif;
+}
+
+.layout { 
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar { 
+  width: 6px;
+  background-color: var(--sidebar);
+  transition: width 0.3s ease; 
+  min-height: 100vh;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sidebar:hover {
+  width: 160px;  
+}
+
+.right {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.nav { 
+  display: flex; 
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 32px; 
+  background-color: var(--nav);
+  border-bottom: 1px solid var(--border); 
+}
+
+.nav-logo { 
+  font-size: 1rem;
+  color: #e8e3d8;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.nav-label { 
+  font-size: 0.72rem;
+  color: #5a5a52;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.main { 
+  flex: 1; 
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 32px;
+  
+}
+
+.upload-section {
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+}
+
+.upload-section h1 {
+  font-size: 1rem;
+  color: var(--text);
+  font-weight: 400;
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+.upload-section h2 {
+  font-size: 1rem;
+  color: var(--text);
+  font-weight: 400;
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+
+
+.upload-sub {
+  font-size: 0.72rem;
+  color: #aaa89e;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 36px;
+}
+
+.divider {
+  width: 32px;
+  height: 1px;
+  background: #c8c2b8;
+  margin: 0 auto 36px;
+}
+
+.file-label {
+  display: inline-block;
+  padding: 9px 24px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  background: transparent;
+  font-family: 'Georgia', serif;
+}
+
+.file-label:hover {
+  background: var(--accent);
+  color: #f5f2ee;
+}
+
+.file-label input {
+  display: none;
+}
+
+button {
+  display: block;
+  width: 100%;
+  padding: 11px;
+  background: var(--accent);
+  color: #e8e3d8;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border: none;
+  cursor: pointer;
+  font-family: 'Georgia', serif;
+  margin-top: 10px;
+}
+
+button:hover {
+  background: #2e2e2a;
+}
+
+.hint {
+  font-size: 0.68rem;
+  color: #bbb8ae;
+  margin-top: 18px;
+  letter-spacing: 0.04em;
+}
+.spinner {
+  display: none;
+}
+
+.output {
+  display: none;
+}
+.sidebar-inner {
+  padding: 24px 16px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  white-space: nowrap;
+}
+
+.sidebar:hover .sidebar-inner {
+  opacity: 1;
+}
+
+.sidebar-item {
+  display: block;
+  font-size: 0.72rem;
+  color: #9a9a8e;
+  padding: 10px 0;
+  border-bottom: 1px solid #3a3a38;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.text-input {
+  display: block;
+  width: 100%;
+  padding: 9px 14px;
+  margin-bottom: 10px;
+  border: 1px solid #c8c2b8;
+  background: transparent;
+  font-family: 'Georgia', serif;
+  font-size: 0.8rem;
+  color: var(--text);
+  letter-spacing: 0.04em;
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: var(--accent);
+}

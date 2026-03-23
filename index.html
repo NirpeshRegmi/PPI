@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Redact</title>
+  <link rel="stylesheet" href="style.css"> 
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class = "sidebar-inner">
+        <span class ="sidebar-item">History</span> 
+      </div>
+    </aside>
+    <div class="right">
+      <nav class="nav">
+        <span class="nav-logo">Transce<sup>3</sup>nd</span>
+        <span class="nav-label">Internal Tooling</span>
+      </nav>
+      <main class="main">
+        <div class="upload-section">
+          <h1>Upload Documents</h1>
+          <p class="upload-sub"> Types: pdf · docx · xlsx</p>
+          <div class="divider"></div>
+          <h2>Name of Client</h2>
+          <input type="text" placeholder="First name" class="text-input" />
+          <input type="text" placeholder="Last name" class="text-input" />
+          <label class="file-label">
+            Choose Files
+            <input type="file" multiple accept=".pdf, .docx, .xlsx" />
+          </label>
+          <button type="button">Submit for processing</button>
+        </div>
+        <div class="spinner">
+          <h1>Processing your documents</h1>
+        </div>
+        <div class="output">
+          <h1>Results</h1>
+          <p>hello</p>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
