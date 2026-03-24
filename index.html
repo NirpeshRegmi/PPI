@@ -9,8 +9,8 @@
 <body>
   <div class="layout">
     <aside class="sidebar">
-      <div class = "sidebar-inner">
-        <span class ="sidebar-item">History</span> 
+      <div class="sidebar-inner">
+        <span class="sidebar-item">History</span> 
       </div>
     </aside>
     <div class="right">
@@ -19,28 +19,49 @@
         <span class="nav-label">Internal Tooling</span>
       </nav>
       <main class="main">
-        <div class="upload-section">
+
+        
+        <div class="upload-section" id="upload-section">
           <h1>Upload Documents</h1>
-          <p class="upload-sub"> Types: pdf · docx · xlsx</p>
+          <p class="upload-sub">Types: pdf · docx · xlsx</p>
           <div class="divider"></div>
-          <h2>Name of Client</h2>
-          <input type="text" placeholder="First name" class="text-input" />
-          <input type="text" placeholder="Last name" class="text-input" />
-          <label class="file-label">
+          <h2>Names of Client</h2>
+
+          <div class="name-row">
+            <input type="text" placeholder="Full Name" class="text-input" />
+          </div>
+
+          <div class="name-row">
+            <input type="text" placeholder="Full Name" class="text-input" />
+            <button type="button" id="more" onclick="addName(this)">+</button>
+          </div>
+
+          <div id="extra-names"></div>
+
+          <label class="file-label" id="file-label-btn">
             Choose Files
-            <input type="file" multiple accept=".pdf, .docx, .xlsx" />
+            <input type="file" id="file-input" multiple accept=".pdf,.docx,.xlsx" />
           </label>
-          <button type="button">Submit for processing</button>
+          <div id="file-list" class="file-list"></div>
+
+          <button type="button" id="submit-btn" onclick="submitForm()">Submit for processing</button>
         </div>
-        <div class="spinner">
-          <h1>Processing your documents</h1>
+
+      
+        <div class="spinner" id="spinner">
+          <div class="spinner-ring"></div>
+          <p>Processing your documents</p>
         </div>
-        <div class="output">
+
+        <div class="output" id="output">
           <h1>Results</h1>
-          <p>hello</p>
+          <p id="output-text">Your documents have been uploaded successfully.</p>
+          <button type="button" onclick="resetForm()">Start Over</button>
         </div>
+
       </main>
     </div>
   </div>
+  <script src="script.js"></script>
 </body>
 </html>

@@ -15,28 +15,28 @@
   padding: 0;
 }
 
-body { 
+body {
   min-height: 100vh;
   background-color: var(--bg);
   font-family: 'Georgia', serif;
 }
 
-.layout { 
+.layout {
   display: flex;
   min-height: 100vh;
 }
 
-.sidebar { 
+.sidebar {
   width: 6px;
   background-color: var(--sidebar);
-  transition: width 0.3s ease; 
+  transition: width 0.3s ease;
   min-height: 100vh;
   overflow: hidden;
   flex-shrink: 0;
 }
 
 .sidebar:hover {
-  width: 200px;  
+  width: 200px;
 }
 
 .right {
@@ -45,36 +45,35 @@ body {
   flex: 1;
 }
 
-.nav { 
-  display: flex; 
+.nav {
+  display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 15px 32px; 
+  padding: 15px 32px;
   background-color: var(--nav);
-  border-bottom: 1px solid var(--border); 
+  border-bottom: 1px solid var(--border);
 }
 
-.nav-logo { 
+.nav-logo {
   font-size: 1rem;
   color: #e8e3d8;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
-.nav-label { 
+.nav-label {
   font-size: 0.72rem;
   color: #5a5a52;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
-.main { 
-  flex: 1; 
+.main {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 48px 32px;
-  
 }
 
 .upload-section {
@@ -90,14 +89,14 @@ body {
   margin-bottom: 6px;
   letter-spacing: 0.02em;
 }
+
 .upload-section h2 {
   font-size: 1rem;
   color: var(--text);
   font-weight: 400;
-  margin-bottom: 6px;
+  margin-bottom: 12px;
   letter-spacing: 0.02em;
 }
-
 
 .upload-sub {
   font-size: 0.72rem;
@@ -125,6 +124,7 @@ body {
   cursor: pointer;
   background: transparent;
   font-family: 'Georgia', serif;
+  margin-top: 10px;
 }
 
 .file-label:hover {
@@ -134,6 +134,20 @@ body {
 
 .file-label input {
   display: none;
+}
+
+.file-list {
+  margin-top: 8px;
+  font-size: 0.68rem;
+  color: var(--text);
+  letter-spacing: 0.04em;
+  text-align: left;
+  min-height: 0;
+}
+
+.file-list p {
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
 }
 
 button {
@@ -155,19 +169,6 @@ button:hover {
   background: #2e2e2a;
 }
 
-.hint {
-  font-size: 0.68rem;
-  color: black;
-  margin-top: 18px;
-  letter-spacing: 0.04em;
-}
-.spinner {
-  display: none;
-}
-
-.output {
-  display: none;
-}
 .sidebar-inner {
   padding: 24px 16px;
   opacity: 0;
@@ -188,11 +189,12 @@ button:hover {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+
 .text-input {
   display: block;
   width: 100%;
   padding: 9px 14px;
-  margin-bottom: 10px;
+  margin-bottom: 0;
   border: 1px solid black;
   background: transparent;
   font-family: 'Georgia', serif;
@@ -204,4 +206,80 @@ button:hover {
 
 .text-input:focus {
   border-color: var(--text);
+}
+
+/* Name rows */
+.name-row {
+  position: relative;
+  margin-bottom: 10px;
+}
+
+.name-row .text-input {
+  width: 100%;
+}
+
+.name-row button {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 43px;
+  height: 100%;
+  margin-top: 0;
+  font-size: 1rem;
+  padding: 0;
+  line-height: 1;
+  display: inline-block;
+}
+
+/* Spinner */
+.spinner {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  color: var(--text);
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.spinner-ring {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(0,0,0,0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Output */
+.output {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+  max-width: 420px;
+  width: 100%;
+}
+
+.output h1 {
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.output p {
+  font-size: 0.8rem;
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+
+.output button {
+  max-width: 200px;
 }
