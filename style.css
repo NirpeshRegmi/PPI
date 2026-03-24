@@ -1,7 +1,7 @@
 @import url('https://fonts.googleapis.com/css?family=Open+Sans&display=swap');
 
 :root {
-  --bg: #2C3691;
+  --bg: rgb(182, 180, 180);
   --sidebar: #2a2a28;
   --border: #2e2e2a;
   --accent: #1f1f1c;
@@ -36,7 +36,7 @@ body {
 }
 
 .sidebar:hover {
-  width: 160px;  
+  width: 200px;  
 }
 
 .right {
@@ -101,16 +101,16 @@ body {
 
 .upload-sub {
   font-size: 0.72rem;
-  color: #aaa89e;
+  color: black;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-bottom: 36px;
 }
 
 .divider {
-  width: 32px;
+  width: 150px;
   height: 1px;
-  background: #c8c2b8;
+  background: black;
   margin: 0 auto 36px;
 }
 
@@ -118,7 +118,7 @@ body {
   display: inline-block;
   padding: 9px 24px;
   border: 1px solid var(--accent);
-  color: var(--accent);
+  color: var(--text);
   font-size: 0.72rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -157,7 +157,7 @@ button:hover {
 
 .hint {
   font-size: 0.68rem;
-  color: #bbb8ae;
+  color: black;
   margin-top: 18px;
   letter-spacing: 0.04em;
 }
@@ -193,7 +193,7 @@ button:hover {
   width: 100%;
   padding: 9px 14px;
   margin-bottom: 10px;
-  border: 1px solid #c8c2b8;
+  border: 1px solid black;
   background: transparent;
   font-family: 'Georgia', serif;
   font-size: 0.8rem;
@@ -203,5 +203,5 @@ button:hover {
 }
 
 .text-input:focus {
-  border-color: var(--accent);
+  border-color: var(--text);
 }
