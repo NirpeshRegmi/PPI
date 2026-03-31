@@ -49,7 +49,7 @@ PII_ENTITIES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Financial shield
+# Financial shield (preserve these through Presidio)
 # ---------------------------------------------------------------------------
 
 DOLLAR_RE = re.compile(r'\$[\d,]+(?:\.\d+)?(?:[KkMmBb])?')
@@ -88,6 +88,64 @@ def restore_financials(text: str, placeholder_map: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Street address redaction (regex-based, runs before Presidio)
+# ---------------------------------------------------------------------------
+
+# Matches patterns like:
+#   123 Main Street, Dallas, TX 75001
+#   456 N. Oak Ave Apt 2B, Austin, Texas 78701
+#   1600 Pennsylvania Avenue NW, Washington, DC 20500
+#   P.O. Box 1234, Chicago, IL 60601
+_STREET_SUFFIXES = (
+    r"(?:street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|court|ct"
+    r"|circle|cir|place|pl|way|wy|terrace|ter|trail|trl|highway|hwy|parkway|pkwy"
+    r"|square|sq|loop|lp|run|path|row|alley|aly|crossing|xing)"
+)
+
+_STATE_ABBREVS = (
+    r"(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI"
+    r"|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT"
+    r"|VT|VA|WA|WV|WI|WY|DC)"
+)
+
+ADDRESS_RE = re.compile(
+    r"""
+    (?:
+        # PO Box
+        \bP\.?O\.?\s+Box\s+\d+\b
+        |
+        # Street address: number + direction? + name + suffix + unit?
+        \b\d{1,6}\s+
+        (?:[NSEW]\.?\s+)?          # optional cardinal direction
+        [A-Za-z0-9]+(?:\s+[A-Za-z0-9]+){0,4}\s+   # street name (1-5 words)
+        """ + _STREET_SUFFIXES + r"""
+        (?:\.)?                    # optional period after suffix
+        (?:\s+(?:Apt|Suite|Ste|Unit|#)\s*[A-Za-z0-9-]+)?  # optional unit
+    )
+    # Optional: city, state zip
+    (?:
+        [,\s]+
+        [A-Za-z]+(?:\s+[A-Za-z]+){0,2}   # city name
+        [,\s]+
+        """ + _STATE_ABBREVS + r"""
+        (?:\s+\d{5}(?:-\d{4})?)?          # optional zip
+    )?
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def redact_addresses(text: str) -> tuple[str, int]:
+    count = [0]
+
+    def replacer(m):
+        count[0] += 1
+        return "[REDACTED]"
+
+    return ADDRESS_RE.sub(replacer, text), count[0]
+
+
+# ---------------------------------------------------------------------------
 # Client name redaction
 # ---------------------------------------------------------------------------
 
@@ -122,21 +180,29 @@ def redact_client_names(text: str, names: List[str]) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 def redact_text(text: str, client_names: List[str]) -> str:
+    # 1. Shield financial data so Presidio doesn't touch it
     shielded, placeholder_map = shield_financials(text)
 
+    # 2. Redact street addresses via regex (Presidio NER misses these)
+    addr_redacted, _ = redact_addresses(shielded)
+
+    # 3. Run Presidio over the result
     analysis_results = analyzer.analyze(
-        text=shielded,
+        text=addr_redacted,
         entities=PII_ENTITIES,
         language="en",
     )
 
     anonymized = anonymizer.anonymize(
-        text=shielded,
+        text=addr_redacted,
         analyzer_results=analysis_results,
         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[REDACTED]"})},
     )
 
+    # 4. Redact client names
     name_redacted, _ = redact_client_names(anonymized.text, client_names)
+
+    # 5. Restore financial data
     return restore_financials(name_redacted, placeholder_map)
 
 
@@ -145,7 +211,6 @@ def redact_text(text: str, client_names: List[str]) -> str:
 # ---------------------------------------------------------------------------
 
 def process_pdf(content: bytes, client_names: List[str]) -> bytes:
-    # Extract text, redact, write clean readable PDF
     text_parts = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page in pdf.pages:
@@ -156,7 +221,6 @@ def process_pdf(content: bytes, client_names: List[str]) -> bytes:
     full_text = "\n\n".join(text_parts)
     redacted = redact_text(full_text, client_names)
 
-    # Build new PDF with reportlab
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter,
                             rightMargin=72, leftMargin=72,
@@ -171,7 +235,6 @@ def process_pdf(content: bytes, client_names: List[str]) -> bytes:
 
 
 def process_docx(content: bytes, client_names: List[str]) -> bytes:
-    # Redact in-place preserving paragraph/run structure
     doc = Document(io.BytesIO(content))
 
     for para in doc.paragraphs:
@@ -179,7 +242,6 @@ def process_docx(content: bytes, client_names: List[str]) -> bytes:
             if run.text:
                 run.text = redact_text(run.text, client_names)
 
-    # Also redact table cells
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -194,7 +256,6 @@ def process_docx(content: bytes, client_names: List[str]) -> bytes:
 
 
 def process_xlsx(content: bytes, client_names: List[str]) -> bytes:
-    # Redact cell values in-place
     wb = openpyxl.load_workbook(io.BytesIO(content))
 
     for sheet in wb.worksheets:
