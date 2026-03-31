@@ -4,7 +4,6 @@ let extraNameCount = 0;
 function addName(btn) {
   if (extraNameCount >= MAX_EXTRA_NAMES) return;
 
-  // Hide the + button on the last row
   btn.style.display = 'none';
 
   const container = document.getElementById('extra-names');
@@ -22,7 +21,6 @@ function addName(btn) {
   container.appendChild(newRow);
 }
 
-// Show selected file names under the button
 document.getElementById('file-input').addEventListener('change', function () {
   const list = document.getElementById('file-list');
   list.innerHTML = '';
@@ -33,45 +31,86 @@ document.getElementById('file-input').addEventListener('change', function () {
   });
 });
 
-function submitForm() {
+async function submitForm() {
   const files = document.getElementById('file-input').files;
   if (files.length === 0) {
     alert('Please choose at least one file before submitting.');
     return;
   }
 
-  // Show spinner, hide upload form
+  const nameInputs = document.querySelectorAll('.text-input');
+  const clientNames = Array.from(nameInputs)
+    .map(i => i.value.trim())
+    .filter(Boolean);
+
   document.getElementById('upload-section').style.display = 'none';
   const spinner = document.getElementById('spinner');
   spinner.style.display = 'flex';
 
-  // Simulate upload delay (replace with real API call later)
-  setTimeout(() => {
+  try {
+    const formData = new FormData();
+    Array.from(files).forEach(file => formData.append('files', file));
+    clientNames.forEach(name => formData.append('client_names', name));
+
+    const response = await fetch('/process', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+    const data = await response.json();
+
     spinner.style.display = 'none';
-    const output = document.getElementById('output');
-    output.style.display = 'flex';
-    document.getElementById('output-text').textContent =
-      `${files.length} document${files.length > 1 ? 's' : ''} uploaded successfully.`;
-  }, 2500);
+    renderResults(data.results);
+
+  } catch (err) {
+    spinner.style.display = 'none';
+    document.getElementById('upload-section').style.display = 'block';
+    alert(`Error: ${err.message}`);
+  }
+}
+
+function renderResults(results) {
+  const output = document.getElementById('output');
+  const outputText = document.getElementById('output-text');
+
+  let html = '';
+  for (const r of results) {
+    if (r.error) {
+      html += `<p><strong>${r.filename}</strong>: ⚠ ${r.error}</p>`;
+      continue;
+    }
+
+    // Trigger download automatically
+    const bytes = Uint8Array.from(atob(r.download), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: r.mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `redacted_${r.filename}`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    html += `<p><strong>${r.filename}</strong> — redacted file downloading...</p>`;
+  }
+
+  outputText.innerHTML = html || 'No results returned.';
+  output.style.display = 'flex';
 }
 
 function resetForm() {
-  // Reset extra names
   document.getElementById('extra-names').innerHTML = '';
   extraNameCount = 0;
 
-  // Restore + button on original last name row
   const originalBtn = document.getElementById('more');
   originalBtn.style.display = 'inline-block';
 
-  // Clear file list
   document.getElementById('file-list').innerHTML = '';
   document.getElementById('file-input').value = '';
 
-  // Clear all text inputs
   document.querySelectorAll('.text-input').forEach(i => i.value = '');
 
-  // Show upload section again
   document.getElementById('output').style.display = 'none';
   document.getElementById('upload-section').style.display = 'block';
 }
