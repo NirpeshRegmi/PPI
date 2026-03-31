@@ -9,7 +9,6 @@ services:
     depends_on:
       - api1
       - api2
-      - api3
     restart: unless-stopped
     mem_limit: 256m
 
@@ -18,18 +17,12 @@ services:
     expose:
       - "8000"
     restart: unless-stopped
-    mem_limit: 2g
+    mem_limit: 4g
 
   api2:
     build: ./api
     expose:
       - "8000"
     restart: unless-stopped
-    mem_limit: 2g
+    mem_limit: 4g
 
-  api3:
-    build: ./api
-    expose:
-      - "8000"
-    restart: unless-stopped
-    mem_limit: 2g
