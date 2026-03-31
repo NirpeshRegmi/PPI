@@ -91,47 +91,27 @@ def restore_financials(text: str, placeholder_map: dict) -> str:
 # Street address redaction (regex-based, runs before Presidio)
 # ---------------------------------------------------------------------------
 
-# Matches patterns like:
-#   123 Main Street, Dallas, TX 75001
-#   456 N. Oak Ave Apt 2B, Austin, Texas 78701
-#   1600 Pennsylvania Avenue NW, Washington, DC 20500
-#   P.O. Box 1234, Chicago, IL 60601
-_STREET_SUFFIXES = (
+ADDRESS_RE = re.compile(
+    r"(?:"
+    r"\bP\.?O\.?\s+Box\s+\d+"
+    r"|"
+    r"\b\d{1,6}\s+"
+    r"(?:[NSEWnsew]\.?\s+)?"
+    r"[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+){0,4}\s+"
     r"(?:street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|court|ct"
     r"|circle|cir|place|pl|way|wy|terrace|ter|trail|trl|highway|hwy|parkway|pkwy"
-    r"|square|sq|loop|lp|run|path|row|alley|aly|crossing|xing)"
-)
-
-_STATE_ABBREVS = (
+    r"|square|sq|loop|lp|run|path|row|alley|aly|crossing|xing)\.?"
+    r"(?:\s+(?:Apt|Suite|Ste|Unit|#)\s*[A-Za-z0-9-]+)?"
+    r")"
+    r"(?:[,\s]+"
+    r"[A-Za-z]+(?:\s+[A-Za-z]+){0,2}"
+    r"[,\s]+"
     r"(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI"
     r"|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT"
     r"|VT|VA|WA|WV|WI|WY|DC)"
-)
-
-ADDRESS_RE = re.compile(
-    r"""
-    (?:
-        # PO Box
-        \bP\.?O\.?\s+Box\s+\d+\b
-        |
-        # Street address: number + direction? + name + suffix + unit?
-        \b\d{1,6}\s+
-        (?:[NSEW]\.?\s+)?          # optional cardinal direction
-        [A-Za-z0-9]+(?:\s+[A-Za-z0-9]+){0,4}\s+   # street name (1-5 words)
-        """ + _STREET_SUFFIXES + r"""
-        (?:\.)?                    # optional period after suffix
-        (?:\s+(?:Apt|Suite|Ste|Unit|#)\s*[A-Za-z0-9-]+)?  # optional unit
-    )
-    # Optional: city, state zip
-    (?:
-        [,\s]+
-        [A-Za-z]+(?:\s+[A-Za-z]+){0,2}   # city name
-        [,\s]+
-        """ + _STATE_ABBREVS + r"""
-        (?:\s+\d{5}(?:-\d{4})?)?          # optional zip
-    )?
-    """,
-    re.VERBOSE | re.IGNORECASE,
+    r"(?:\s+\d{5}(?:-\d{4})?)?"
+    r")?",
+    re.IGNORECASE,
 )
 
 
@@ -228,8 +208,10 @@ def process_pdf(content: bytes, client_names: List[str]) -> bytes:
     styles = getSampleStyleSheet()
     story = []
     for line in redacted.split("\n"):
-        story.append(Paragraph(line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") or "&nbsp;",
-                               styles["Normal"]))
+        story.append(Paragraph(
+            line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") or "&nbsp;",
+            styles["Normal"]
+        ))
     doc.build(story)
     return buf.getvalue()
 
