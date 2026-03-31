@@ -1,5 +1,6 @@
 const MAX_EXTRA_NAMES = 3;
 let extraNameCount = 0;
+let selectedFiles = [];
 
 function addName(btn) {
   if (extraNameCount >= MAX_EXTRA_NAMES) return;
@@ -21,19 +22,49 @@ function addName(btn) {
   container.appendChild(newRow);
 }
 
-document.getElementById('file-input').addEventListener('change', function () {
+function renderFileList(files) {
   const list = document.getElementById('file-list');
   list.innerHTML = '';
-  Array.from(this.files).forEach(file => {
+  files.forEach(file => {
     const p = document.createElement('p');
     p.textContent = file.name;
     list.appendChild(p);
   });
+}
+
+// File input
+document.getElementById('file-input').addEventListener('change', function () {
+  selectedFiles = Array.from(this.files);
+  renderFileList(selectedFiles);
+});
+
+// Drag and drop
+const dropZone = document.getElementById('drop-zone');
+
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+
+dropZone.addEventListener('dragleave', (e) => {
+  if (!dropZone.contains(e.relatedTarget)) {
+    dropZone.classList.remove('drag-over');
+  }
+});
+
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const allowed = /\.(pdf|docx|xlsx)$/i;
+  const files = Array.from(e.dataTransfer.files).filter(f => allowed.test(f.name));
+  if (files.length) {
+    selectedFiles = files;
+    renderFileList(selectedFiles);
+  }
 });
 
 async function submitForm() {
-  const files = document.getElementById('file-input').files;
-  if (files.length === 0) {
+  if (selectedFiles.length === 0) {
     alert('Please choose at least one file before submitting.');
     return;
   }
@@ -49,7 +80,7 @@ async function submitForm() {
 
   try {
     const formData = new FormData();
-    Array.from(files).forEach(file => formData.append('files', file));
+    selectedFiles.forEach(file => formData.append('files', file));
     clientNames.forEach(name => formData.append('client_names', name));
 
     const response = await fetch('/process', {
@@ -82,7 +113,6 @@ function renderResults(results) {
       continue;
     }
 
-    // Trigger download automatically
     const bytes = Uint8Array.from(atob(r.download), c => c.charCodeAt(0));
     const blob = new Blob([bytes], { type: r.mime });
     const url = URL.createObjectURL(blob);
@@ -102,6 +132,7 @@ function renderResults(results) {
 function resetForm() {
   document.getElementById('extra-names').innerHTML = '';
   extraNameCount = 0;
+  selectedFiles = [];
 
   const originalBtn = document.getElementById('more');
   originalBtn.style.display = 'inline-block';

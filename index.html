@@ -38,11 +38,14 @@
 
           <div id="extra-names"></div>
 
-          <label class="file-label" id="file-label-btn">
-            Choose Files
-            <input type="file" id="file-input" multiple accept=".pdf,.docx,.xlsx" />
-          </label>
-          <div id="file-list" class="file-list"></div>
+          <div id="drop-zone" class="drop-zone">
+            <p class="drop-zone-hint">Drag &amp; drop files here</p>
+            <label class="file-label" id="file-label-btn">
+              Choose Files
+              <input type="file" id="file-input" multiple accept=".pdf,.docx,.xlsx" />
+            </label>
+            <div id="file-list" class="file-list"></div>
+          </div>
 
           <button type="button" id="submit-btn" onclick="submitForm()">Submit for processing</button>
         </div>

@@ -113,6 +113,27 @@ body {
   margin: 0 auto 36px;
 }
 
+.drop-zone {
+  border: 2px dashed var(--accent);
+  padding: 24px 20px 16px;
+  margin-top: 10px;
+  text-align: center;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.drop-zone.drag-over {
+  background: rgba(31, 31, 28, 0.08);
+  border-color: #555;
+}
+
+.drop-zone-hint {
+  font-size: 0.68rem;
+  color: #666;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
 .file-label {
   display: inline-block;
   padding: 9px 24px;
@@ -124,7 +145,6 @@ body {
   cursor: pointer;
   background: transparent;
   font-family: 'Georgia', serif;
-  margin-top: 10px;
 }
 
 .file-label:hover {
