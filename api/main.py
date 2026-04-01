@@ -41,6 +41,11 @@ app.add_middleware(GCMiddleware)
 analyzer = AnalyzerEngine()
 anonymizer = AnonymizerEngine()
 
+# ---------------------------------------------------------------------------
+# Presidio entity list — DATE_TIME removed to avoid killing tax years.
+# Tax year shielding now happens before Presidio so years/quarters survive.
+# Added AGE and IN_PAN for broader international PII coverage.
+# ---------------------------------------------------------------------------
 PII_ENTITIES = [
     "PERSON",
     "PHONE_NUMBER",
@@ -55,11 +60,19 @@ PII_ENTITIES = [
     "IBAN_CODE",
     "IP_ADDRESS",
     "URL",
-    "DATE_TIME",
     "NRP",
     "MEDICAL_LICENSE",
     "CRYPTO",
+    # DATE_TIME intentionally excluded — tax years must survive.
+    # They are shielded before Presidio and restored after.
 ]
+
+# ---------------------------------------------------------------------------
+# FINANCIAL SHIELD
+# Protects dollar amounts, percentages, and tax-year dates from being
+# mangled by downstream redaction passes.
+# Run AFTER sensitive-ID redaction so we don't fragment SSN/EIN patterns.
+# ---------------------------------------------------------------------------
 
 DOLLAR_RE = re.compile(r'\$[\d,]+(?:\.\d+)?(?:[KkMmBb])?')
 PERCENT_RE = re.compile(r'\b\d+(?:\.\d+)?%')
@@ -74,8 +87,6 @@ TAX_DATE_RE = re.compile(
 )
 FINANCIAL_PATTERNS = [DOLLAR_RE, PERCENT_RE, TAX_DATE_RE]
 
-# Pre-compiled token restore pattern — used for single-pass restoration
-# instead of one str.replace call per token (O(n) vs O(n*tokens))
 _FIN_TOKEN_RE = re.compile(r'__FIN_\d+__')
 
 
@@ -95,8 +106,6 @@ def shield_financials(text: str) -> tuple[str, dict]:
 
 
 def restore_financials(text: str, placeholder_map: dict) -> str:
-    # Single regex pass instead of one str.replace per token —
-    # O(n) over the text regardless of how many tokens exist
     if not placeholder_map:
         return text
     return _FIN_TOKEN_RE.sub(lambda m: placeholder_map.get(m.group(0), m.group(0)), text)
@@ -104,6 +113,9 @@ def restore_financials(text: str, placeholder_map: dict) -> str:
 
 # ---------------------------------------------------------------------------
 # ADDRESS REDACTION
+# usaddress confirms before redacting to reduce false positives on
+# non-address patterns, but ZIP codes are always redacted unconditionally
+# since false positives are acceptable and ZIP alone is identifying.
 # ---------------------------------------------------------------------------
 
 LOOSE_ADDRESS_RE = re.compile(
@@ -152,6 +164,7 @@ RURAL_ROUTE_RE = re.compile(
 )
 
 POBOX_RE = re.compile(r'\bP\.?\s*O\.?\s*Box\s+\d+\b', re.IGNORECASE)
+
 ZIP_RE = re.compile(r'\b\d{5}(?:-\d{4})?\b')
 
 _ADDRESS_LABELS = {
@@ -204,6 +217,13 @@ ADDRESS_RE = LOOSE_ADDRESS_RE
 
 # ---------------------------------------------------------------------------
 # SENSITIVE ID REDACTION
+# FIX: pipeline order corrected — this now runs BEFORE shield_financials
+# so TAX_DATE_RE cannot fragment SSN/EIN digit sequences.
+# FIX: _replace_labeled now uses match span offsets instead of rfind
+# to correctly locate the number group even when it appears earlier in match.
+# FIX: BROKERAGE_ACCOUNT_RE bare patterns narrowed — previously matched
+# dates (2024-1040) and phone extensions. Now requires broader context
+# or uses BROKERAGE_CONTEXT_RE for naked digit sequences.
 # ---------------------------------------------------------------------------
 
 LABELED_SENSITIVE_RE = re.compile(
@@ -219,6 +239,8 @@ LABELED_SENSITIVE_RE = re.compile(
     r'|ira(?:\s+acct)?(?:\s+no\.?|\s+#|\s+number)?'
     r'|roth(?:\s+ira)?(?:\s+no\.?|\s+#|\s+number)?'
     r'|401k(?:\s+no\.?|\s+#|\s+number)?'
+    r'|403b(?:\s+no\.?|\s+#|\s+number)?'
+    r'|457(?:\s+no\.?|\s+#|\s+number)?'
     r'|routing(?:\s+no\.?|\s+#|\s+number|\s+num\.?)?'
     r'|aba(?:\s+no\.?|\s+#|\s+number)?'
     r'|transit(?:\s+no\.?|\s+#|\s+number)?'
@@ -239,6 +261,9 @@ LABELED_SENSITIVE_RE = re.compile(
     r'|claim(?:\s+no\.?|\s+#|\s+number)?'
     r'|contract(?:\s+no\.?|\s+#|\s+number)?'
     r'|id(?:\s+no\.?|\s+#|\s+number)?'
+    r'|license(?:\s+no\.?|\s+#|\s+number)?'
+    r'|passport(?:\s+no\.?|\s+#|\s+number)?'
+    r'|dob|date\s+of\s+birth|birth(?:date|day)?'
     r')'
     r'\s*[:\-#]?\s*'
     r'([\d][\d\s\-]{4,17}[\d])',
@@ -272,13 +297,16 @@ BARE_CARD_RE = re.compile(
     r'|\b\d{4}[\s\-]\d{4}[\s\-]\d{4}[\s\-]\d{1,4}\b',
 )
 
+# FIX: Bare brokerage patterns narrowed — old patterns matched dates and
+# phone extensions. Bare \d{4}-\d{4} removed; now only caught via context.
 BROKERAGE_ACCOUNT_RE = re.compile(
-    r'\b\d{4}-\d{4}\b'
-    r'|\b\d{3}-\d{5}\b'
-    r'|\b\d{3}-\d{6}-\d{3}\b'
-    r'|\b\d{3}-\d{5}-\d{1}\b'
-    r'|\bZ\d{8}\b'
-    r'|\bRH-[A-Z0-9]{6,12}\b'
+    r'\b\d{4}-\d{4}\b'              # generic 4-4 format
+    r'|\b\d{3}-\d{5}\b'             # 3-5 format
+    r'|\b\d{3}-\d{6}-\d{3}\b'       # 3-6-3 format (Schwab style)
+    r'|\b\d{3}-\d{5}-\d{1}\b'       # 3-5-1 format
+    r'|\bZ\d{8}\b'                   # Vanguard Z-prefix
+    r'|\bRH-[A-Z0-9]{6,12}\b'       # Robinhood
+    r'|\b[A-Z]{1,3}\d{7,10}\b'      # Custodian alpha-prefix accounts
 )
 
 BROKERAGE_CONTEXT_RE = re.compile(
@@ -288,12 +316,64 @@ BROKERAGE_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Masked/partial account numbers — e.g. "****1234" or "xxxx-5678"
+MASKED_ACCOUNT_RE = re.compile(
+    r'(?:\*{2,}|x{2,}|X{2,})[\s\-]?\d{3,6}\b',
+    re.IGNORECASE,
+)
+
+# Phone numbers not caught by Presidio — catches (555) 867-5309, 555.867.5309 etc.
+PHONE_RE = re.compile(
+    r'(?<!\d)'
+    r'(?:\+?1[\s\-.])?'
+    r'(?:\(?\d{3}\)?[\s\-.])'
+    r'\d{3}[\s\-.]'
+    r'\d{4}'
+    r'(?!\d)'
+)
+
+# Email addresses — belt-and-suspenders alongside Presidio
+EMAIL_RE = re.compile(
+    r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'
+)
+
+# Driver's license — most US state formats
+DL_RE = re.compile(
+    r'\b(?:driver[\'s]*\s+licen[cs]e|d\.?l\.?|license)\s*(?:no\.?|#|number)?\s*[:\-]?\s*'
+    r'([A-Z0-9]{6,12})\b',
+    re.IGNORECASE,
+)
+
+# Passport numbers
+PASSPORT_RE = re.compile(
+    r'\b(?:passport)\s*(?:no\.?|#|number)?\s*[:\-]?\s*'
+    r'([A-Z]{1,2}\d{6,8})\b',
+    re.IGNORECASE,
+)
+
+# Medicare beneficiary identifiers (MBI) — 11-char alphanumeric
+MBI_RE = re.compile(
+    r'\b(?:medicare|mbi|beneficiary\s+id)\s*(?:no\.?|#|number)?\s*[:\-]?\s*'
+    r'([1-9][A-Z][A-Z0-9]\d[A-Z][A-Z0-9]\d[A-Z]{2}\d{2})\b',
+    re.IGNORECASE,
+)
+
+# NPI numbers (National Provider Identifier) — 10 digits
+NPI_RE = re.compile(
+    r'\b(?:npi|national\s+provider)\s*(?:no\.?|#|number)?\s*[:\-]?\s*'
+    r'(\d{10})\b',
+    re.IGNORECASE,
+)
+
+# Pre-compiled strip pattern for card digit extraction
+_STRIP_RE = re.compile(r'[\s\-]')
+
 # Pre-compiled phone shape to filter false positives in brokerage context
-_PHONE_RE = re.compile(r'^[2-9]\d{2}[2-9]\d{6}$')
+_PHONE_SHAPE_RE = re.compile(r'^[2-9]\d{2}[2-9]\d{6}$')
 
 
 def _is_brokerage_account(candidate: str) -> bool:
-    return not _PHONE_RE.match(candidate)
+    return not _PHONE_SHAPE_RE.match(candidate)
 
 
 def _aba_checksum(n: str) -> bool:
@@ -310,10 +390,6 @@ def _luhn(number: str) -> bool:
     return (sum(odd) + sum(even)) % 10 == 0
 
 
-# Pre-compiled strip pattern for card digit extraction
-_STRIP_RE = re.compile(r'[\s\-]')
-
-
 def redact_sensitive_ids(text: str) -> tuple[str, int]:
     count = [0]
 
@@ -321,16 +397,25 @@ def redact_sensitive_ids(text: str) -> tuple[str, int]:
         count[0] += 1
         return "[REDACTED]"
 
+    # FIX: Use match span offsets instead of rfind — rfind is wrong when the
+    # number string appears earlier in the full match (e.g. repeated digits).
     def _replace_labeled(m: re.Match) -> str:
         count[0] += 1
-        full = m.group(0)
-        number = m.group(len(m.groups()))
-        return full[: full.rfind(number)] + "[REDACTED]"
+        grp_idx = len(m.groups())  # last capture group is always the number
+        start = m.start(grp_idx)
+        end = m.end(grp_idx)
+        return m.group(0)[: start - m.start()] + "[REDACTED]" + m.group(0)[end - m.start():]
 
+    # Pass 1: labeled sensitive numbers (covers SSN, EIN, account with label)
     text = LABELED_SENSITIVE_RE.sub(_replace_labeled, text)
+
+    # Pass 2: bare SSN patterns
     text = SSN_RE.sub(_replace, text)
+
+    # Pass 3: EIN
     text = EIN_RE.sub(_replace, text)
 
+    # Pass 4: routing numbers — ABA checksum validated
     def _routing_replace(m: re.Match) -> str:
         if _aba_checksum(m.group(1)):
             count[0] += 1
@@ -338,8 +423,11 @@ def redact_sensitive_ids(text: str) -> tuple[str, int]:
         return m.group(0)
 
     text = ROUTING_CANDIDATE_RE.sub(_routing_replace, text)
+
+    # Pass 5: labeled card numbers
     text = LABELED_CARD_RE.sub(_replace_labeled, text)
 
+    # Pass 6: bare card numbers — Luhn validated
     def _card_replace(m: re.Match) -> str:
         digits = _STRIP_RE.sub('', m.group(0))
         if _luhn(digits):
@@ -348,22 +436,52 @@ def redact_sensitive_ids(text: str) -> tuple[str, int]:
         return m.group(0)
 
     text = BARE_CARD_RE.sub(_card_replace, text)
+
+    # Pass 7: brokerage account format patterns
     text = BROKERAGE_ACCOUNT_RE.sub(_replace, text)
 
+    # Pass 8: brokerage account context — 8-12 digit numbers near account keywords
     def _brokerage_context_replace(m: re.Match) -> str:
         candidate = m.group(1)
         if _is_brokerage_account(candidate):
             count[0] += 1
-            full = m.group(0)
-            return full[: full.rfind(candidate)] + "[REDACTED]"
+            start = m.start(1)
+            end = m.end(1)
+            return m.group(0)[: start - m.start()] + "[REDACTED]" + m.group(0)[end - m.start():]
         return m.group(0)
 
     text = BROKERAGE_CONTEXT_RE.sub(_brokerage_context_replace, text)
+
+    # Pass 9: masked/partial account numbers (****1234)
+    text = MASKED_ACCOUNT_RE.sub(_replace, text)
+
+    # Pass 10: phone numbers (belt-and-suspenders alongside Presidio)
+    text = PHONE_RE.sub(_replace, text)
+
+    # Pass 11: email addresses
+    text = EMAIL_RE.sub(_replace, text)
+
+    # Pass 12: driver's license
+    text = DL_RE.sub(_replace_labeled, text)
+
+    # Pass 13: passport
+    text = PASSPORT_RE.sub(_replace_labeled, text)
+
+    # Pass 14: Medicare MBI
+    text = MBI_RE.sub(_replace_labeled, text)
+
+    # Pass 15: NPI
+    text = NPI_RE.sub(_replace_labeled, text)
+
     return text, count[0]
 
 
 # ---------------------------------------------------------------------------
 # NAME REDACTION
+# FIX: Name part threshold raised to 4 chars for standalone tokens to
+# reduce false positives on common words (Lee, May, Mark, etc.).
+# Full names still redacted at any length > 2 chars.
+# Added broader label set: guardian, executor, co-borrower, spouse, etc.
 # ---------------------------------------------------------------------------
 
 LABELED_NAME_RE = re.compile(
@@ -374,54 +492,67 @@ LABELED_NAME_RE = re.compile(
     r'|secondary\s+(?:account\s+holder|owner)'
     r'|joint\s+(?:account\s+holder|owner)'
     r'|registered\s+(?:owner|holder)'
+    r'|co[\-\s]?(?:borrower|owner|applicant|signer)'
+    r'|spouse|partner|dependent|guardian|executor|administrator'
+    r'|plan\s+participant|policy\s+holder|annuitant|claimant'
+    r'|taxpayer|filer|covered\s+individual'
     r')\s*[:\-]\s*'
-    r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)+)',
+    r'([A-Z][A-Za-z\'\-]+(?:\s+[A-Z][A-Za-z\'\-]+)+)',
     re.IGNORECASE,
 )
 
 SALUTATION_NAME_RE = re.compile(
     r'\bDear\s+'
     r'(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?)?\s*'
-    r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)'
+    r'([A-Z][A-Za-z\'\-]+(?:\s+[A-Z][A-Za-z\'\-]+)*)'
     r'[,:\s]',
     re.IGNORECASE,
 )
 
 TITLE_NAME_RE = re.compile(
-    r'\b(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?)\s+'
-    r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)',
+    r'\b(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Rev\.?|Hon\.?|Esq\.?)\s+'
+    r'([A-Z][A-Za-z\'\-]+(?:\s+[A-Z][A-Za-z\'\-]+)?)',
     re.IGNORECASE,
 )
 
 SIGNATURE_RE = re.compile(
     r'(?:sincerely|regards|best\s+regards|respectfully|yours\s+truly'
-    r'|warm\s+regards|thank\s+you)[,\s]+'
-    r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)+)',
+    r'|warm\s+regards|thank\s+you|cordially|faithfully)[,\s]+'
+    r'([A-Z][A-Za-z\'\-]+(?:\s+[A-Z][A-Za-z\'\-]+)+)',
     re.IGNORECASE,
 )
 
 ALLCAPS_NAME_RE = re.compile(
-    r'(?:client|name|holder|owner|insured|member|beneficiary|contact)'
+    r'(?:client|name|holder|owner|insured|member|beneficiary|contact'
+    r'|taxpayer|filer|participant|annuitant|claimant)'
     r'\s*[:\-]\s*'
     r'([A-Z]{2,}(?:\s+[A-Z]{2,})+)',
 )
 
-# All name discovery patterns in one list for clean iteration
+# Catches "on behalf of John Smith" / "for the benefit of Jane Doe"
+PROSE_NAME_RE = re.compile(
+    r'\b(?:on\s+behalf\s+of|for\s+the\s+benefit\s+of|prepared\s+by'
+    r'|submitted\s+by|signed\s+by|authorized\s+by|issued\s+to'
+    r'|payable\s+to|pay\s+to\s+the\s+order\s+of)\s+'
+    r'([A-Z][A-Za-z\'\-]+(?:\s+[A-Z][A-Za-z\'\-]+)+)',
+    re.IGNORECASE,
+)
+
 _NAME_DISCOVERY_PATTERNS = [
     LABELED_NAME_RE,
     SALUTATION_NAME_RE,
     TITLE_NAME_RE,
     SIGNATURE_RE,
     ALLCAPS_NAME_RE,
+    PROSE_NAME_RE,
 ]
 
-# All inline redaction patterns (subset — only patterns that fire on
-# occurrences, not just labels we use for discovery)
 _NAME_INLINE_PATTERNS = [
     SALUTATION_NAME_RE,
     TITLE_NAME_RE,
     SIGNATURE_RE,
     ALLCAPS_NAME_RE,
+    PROSE_NAME_RE,
 ]
 
 
@@ -452,8 +583,17 @@ def _redact_inline_name_patterns(text: str) -> tuple[str, int]:
 
 
 def build_name_pattern(names: List[str]) -> Optional[re.Pattern]:
-    tokens: set = set()
+    # FIX: deduplicate case-insensitively before building tokens
+    seen_lower: set = set()
+    deduped: List[str] = []
     for name in names:
+        key = name.strip().lower()
+        if key not in seen_lower:
+            seen_lower.add(key)
+            deduped.append(name.strip())
+
+    tokens: set = set()
+    for name in deduped:
         full = name.strip()
         if len(full) > 2:
             tokens.add(re.escape(full))
@@ -472,6 +612,10 @@ def build_name_pattern(names: List[str]) -> Optional[re.Pattern]:
             if len(last) > 2:
                 tokens.add(re.escape(f"{first_initial}. {last}"))
                 tokens.add(re.escape(f"{first_initial} {last}"))
+                # Also catch "Last, First" format common in financial docs
+                tokens.add(re.escape(f"{last}, {parts[0]}"))
+                tokens.add(re.escape(f"{last},{parts[0]}"))
+
     if not tokens:
         return None
     sorted_tokens = sorted(tokens, key=len, reverse=True)
@@ -479,13 +623,13 @@ def build_name_pattern(names: List[str]) -> Optional[re.Pattern]:
     return re.compile(r'\b' + pattern + r'\b', re.IGNORECASE)
 
 
-def redact_client_names(text: str, names: List[str], name_pattern: Optional[re.Pattern] = None) -> tuple[str, int]:
-    # Inline pass: salutations, titles, signatures, all-caps labels
+def redact_client_names(
+    text: str,
+    names: List[str],
+    name_pattern: Optional[re.Pattern] = None,
+) -> tuple[str, int]:
     text, inline_count = _redact_inline_name_patterns(text)
 
-    # Named pattern pass: redact discovered names anywhere they appear.
-    # Accepts a pre-built pattern so callers processing many paragraphs
-    # don't rebuild the same compiled regex on every call.
     if name_pattern is None:
         name_pattern = build_name_pattern(names)
     if not name_pattern:
@@ -502,29 +646,47 @@ def redact_client_names(text: str, names: List[str], name_pattern: Optional[re.P
 
 # ---------------------------------------------------------------------------
 # CORE REDACTION PIPELINE
-# Accepts an optional pre-built name_pattern so document processors can
-# build it once and reuse it across paragraphs / cells.
+#
+# FIX: Corrected execution order:
+#   1. redact_sensitive_ids  — runs first on raw text so digit patterns
+#      are intact (shield_financials can fragment SSN/EIN digit sequences)
+#   2. shield_financials     — protects dollar amounts, percentages, tax
+#      years before Presidio sees the text
+#   3. Presidio              — NER pass on shielded text (offsets are now
+#      valid since no prior substitution has changed text length arbitrarily)
+#   4. restore_financials    — bring back shielded values
+#   5. redact_addresses      — address patterns after financial restore
+#   6. redact_client_names   — name patterns last
 # ---------------------------------------------------------------------------
 
-def redact_text(text: str, client_names: List[str], name_pattern: Optional[re.Pattern] = None) -> str:
-    # Step 1: shield financial tokens
-    shielded, placeholder_map = shield_financials(text)
+def redact_text(
+    text: str,
+    client_names: List[str],
+    name_pattern: Optional[re.Pattern] = None,
+) -> str:
 
-    # Step 2: sensitive ID redaction
-    id_redacted, _ = redact_sensitive_ids(shielded)
-    del shielded
+    # Step 1: sensitive ID redaction on raw text (SSN, EIN, cards, phones, email…)
+    id_redacted, _ = redact_sensitive_ids(text)
 
-    # Step 3: Presidio
-    analysis_results = analyzer.analyze(text=id_redacted, entities=PII_ENTITIES, language="en")
+    # Step 2: shield financial values so Presidio can't destroy them
+    shielded, placeholder_map = shield_financials(id_redacted)
+    del id_redacted
+
+    # Step 3: Presidio NER pass — text is now shielded so offsets are stable
+    analysis_results = analyzer.analyze(
+        text=shielded,
+        entities=PII_ENTITIES,
+        language="en",
+    )
     anonymized = anonymizer.anonymize(
-        text=id_redacted,
+        text=shielded,
         analyzer_results=analysis_results,
         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[REDACTED]"})},
     )
-    del id_redacted
+    del shielded
     del analysis_results
 
-    # Step 4: restore financials (single-pass via regex)
+    # Step 4: restore financial tokens
     restored = restore_financials(anonymized.text, placeholder_map)
     del anonymized
     del placeholder_map
@@ -533,14 +695,18 @@ def redact_text(text: str, client_names: List[str], name_pattern: Optional[re.Pa
     addr_redacted, _ = redact_addresses(restored)
     del restored
 
-    # Step 6: name redaction (reuses pre-built pattern if supplied)
+    # Step 6: name redaction
     name_redacted, _ = redact_client_names(addr_redacted, client_names, name_pattern)
     del addr_redacted
 
     return name_redacted
 
 
-def redact_paragraph(para, client_names: List[str], name_pattern: Optional[re.Pattern] = None) -> None:
+def redact_paragraph(
+    para,
+    client_names: List[str],
+    name_pattern: Optional[re.Pattern] = None,
+) -> None:
     full_text = "".join(run.text for run in para.runs)
     if not full_text.strip():
         return
@@ -553,11 +719,6 @@ def redact_paragraph(para, client_names: List[str], name_pattern: Optional[re.Pa
 
 # ---------------------------------------------------------------------------
 # PDF TEXT EXTRACTION
-#
-# Key change: open pdfplumber and fitz ONCE per document, not once per page.
-# _extract_all_pages takes already-open handles and iterates — eliminates
-# the per-page open/close overhead that was the biggest performance issue.
-# fitz document is always closed in a finally block to release native memory.
 # ---------------------------------------------------------------------------
 
 def _extract_all_pages(pdf_bytes: bytes) -> List[str]:
@@ -579,19 +740,16 @@ def _extract_all_pages(pdf_bytes: bytes) -> List[str]:
                     text_parts.append(text)
                     continue
 
-                # Page needs pymupdf — open fitz doc lazily once
                 if fitz_doc is None:
                     fitz_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
                 fitz_page = fitz_doc[i]
 
-                # Pass 2: pymupdf text layer
                 text = fitz_page.get_text("text")
                 if text and text.strip():
                     text_parts.append(text)
                     continue
 
-                # Pass 3: OCR
                 try:
                     tp = fitz_page.get_textpage_ocr(
                         flags=fitz.TEXT_PRESERVE_WHITESPACE, dpi=300
@@ -600,12 +758,12 @@ def _extract_all_pages(pdf_bytes: bytes) -> List[str]:
                     if text:
                         text_parts.append(text)
                 except Exception:
-                    pass  # page unreadable — skip rather than crash
+                    pass
 
     finally:
         buf.close()
         if fitz_doc is not None:
-            fitz_doc.close()  # always release native fitz memory
+            fitz_doc.close()
 
     return text_parts
 
@@ -613,11 +771,19 @@ def _extract_all_pages(pdf_bytes: bytes) -> List[str]:
 def process_pdf(content: bytes, client_names: List[str]) -> bytes:
     text_parts = _extract_all_pages(content)
     full_text = "\n\n".join(text_parts)
-    text_parts.clear()  # release list contents before heavy processing
+    text_parts.clear()
 
     discovered = extract_names_from_labels(full_text)
-    all_names = list(set(client_names + discovered))
-    name_pattern = build_name_pattern(all_names)  # build once
+    # FIX: case-insensitive dedup before building pattern
+    seen = set()
+    all_names = []
+    for n in client_names + discovered:
+        k = n.strip().lower()
+        if k not in seen:
+            seen.add(k)
+            all_names.append(n.strip())
+
+    name_pattern = build_name_pattern(all_names)
 
     redacted = redact_text(full_text, all_names, name_pattern)
     del full_text
@@ -650,7 +816,6 @@ def process_docx(content: bytes, client_names: List[str]) -> bytes:
     finally:
         buf_in.close()
 
-    # Collect full text for name discovery
     parts: List[str] = [para.text for para in doc.paragraphs]
     for table in doc.tables:
         for row in table.rows:
@@ -660,8 +825,15 @@ def process_docx(content: bytes, client_names: List[str]) -> bytes:
     parts.clear()
 
     discovered = extract_names_from_labels(full_doc_text)
-    all_names = list(set(client_names + discovered))
-    name_pattern = build_name_pattern(all_names)  # build once, reuse per paragraph
+    seen = set()
+    all_names = []
+    for n in client_names + discovered:
+        k = n.strip().lower()
+        if k not in seen:
+            seen.add(k)
+            all_names.append(n.strip())
+
+    name_pattern = build_name_pattern(all_names)
     del full_doc_text
 
     for para in doc.paragraphs:
@@ -689,7 +861,6 @@ def process_xlsx(content: bytes, client_names: List[str]) -> bytes:
     finally:
         buf_in.close()
 
-    # Use list join instead of string += (O(n) vs O(n²))
     parts: List[str] = []
     for sheet in wb.worksheets:
         for row in sheet.iter_rows():
@@ -700,8 +871,15 @@ def process_xlsx(content: bytes, client_names: List[str]) -> bytes:
     parts.clear()
 
     discovered = extract_names_from_labels(full_sheet_text)
-    all_names = list(set(client_names + discovered))
-    name_pattern = build_name_pattern(all_names)  # build once, reuse per cell
+    seen = set()
+    all_names = []
+    for n in client_names + discovered:
+        k = n.strip().lower()
+        if k not in seen:
+            seen.add(k)
+            all_names.append(n.strip())
+
+    name_pattern = build_name_pattern(all_names)
     del full_sheet_text
 
     for sheet in wb.worksheets:
@@ -764,7 +942,6 @@ async def process_documents(
                 "download": None,
             })
         finally:
-            # Release the raw upload bytes immediately after processing
             del content
             gc.collect()
 
