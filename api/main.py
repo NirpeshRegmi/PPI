@@ -166,7 +166,7 @@ RURAL_ROUTE_RE = re.compile(
 
 POBOX_RE = re.compile(r'\bP\.?\s*O\.?\s*Box\s+\d+\b', re.IGNORECASE)
 
-ZIP_RE = re.compile(r'\b\d{5}(?:-\d{4})?\b')
+ZIP_RE = re.compile(r'\b\d{5}(?:-\d{4})?\b(?=(?:\D|$))')
 
 # 9-digit ZIP+4 without dash — only redact when preceded by a state abbreviation
 # to avoid hitting financial figures, routing numbers, or account numbers.
@@ -212,9 +212,9 @@ CITY_STATE_RE = re.compile(
 # SSN fragment cleanup — catches leftover SSN pieces after partial redaction.
 # IMPORTANT: longer branches must come first so regex consumes the full fragment.
 SSN_FRAGMENT_RE = re.compile(
-    r'\b\d{3}[\s\-]\d{2}[\s\-]\[REDACTED\]'             # NNN-NN-[REDACTED]  — longest, first
+    r'\b\d{3}[\s\-]\d{2}[\s\-]\[REDACTED\][A-Za-z]*'   # 805-32-[REDACTED]ms
+    r'|\b\d{3}[\s\-]\d{2}(?=[^\d]|$)'                   # 805-32 leftover prefix
     r'|\[REDACTED\][\s\-]\d{2}[\s\-]\d{4}\b'            # [REDACTED]-NN-NNNN suffix
-    r'|\b\d{3}[\s\-]\d{2}[\s\-]?(?=\[REDACTED\]|$|\s)'  # NNN-NN- bare prefix — shortest, last
 )
 
 # Catches a 9-digit number immediately after a [REDACTED] block —
@@ -232,6 +232,12 @@ ORPHAN_STATE_RE = re.compile(
     r'|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT'
     r'|VT|VA|WA|WV|WI|WY|DC)\b\s*\[REDACTED\]'
 )
+
+# Aggressive dash kill — catches any remaining digit-dash patterns not caught upstream
+AGGRESSIVE_DASH_RE = re.compile(r'\b\d{2,}[-]\d{2,}[-\dA-Za-z]*\b')
+
+# Long number with trailing letters — e.g. "98765432abc"
+LONG_NUMBER_WITH_SUFFIX_RE = re.compile(r'\b\d{6,}[A-Za-z]+\b')
 
 
 def redact_addresses(text: str) -> tuple[str, int]:
@@ -771,7 +777,7 @@ def _build_name_combos(names: List[str]) -> List[str]:
     return result
 
 
-def redact_fuzzy_names(text: str, names: List[str], threshold: float = 0.70) -> tuple[str, int]:
+def redact_fuzzy_names(text: str, names: List[str], threshold: float = 0.63) -> tuple[str, int]:
     """
     Scan every whitespace-delimited token in text.
     If the lowercased token matches any name combo at >= threshold similarity,
@@ -868,16 +874,46 @@ def _safe_caps_replace(m: re.Match) -> str:
     return '[REDACTED]'
 
 
+def normalize_text_for_names(text: str) -> str:
+    """Collapse spaced initials and normalize punctuation before fuzzy matching."""
+    text = re.sub(r'(?<=\b[A-Z])\s+(?=[A-Z]\b)', '', text)
+    text = re.sub(r'[._]', ' ', text)
+    return text
+
+
+def nuke_remaining_dash_ids(text: str) -> str:
+    """Aggressive final sweep for any dash-separated digit patterns that survived."""
+    return AGGRESSIVE_DASH_RE.sub('[REDACTED]', text)
+
+
+def remove_single_name_tokens(text: str, names: List[str]) -> str:
+    """Redact any standalone word that matches a name part (4+ chars)."""
+    tokens: set = set()
+    for name in names:
+        for part in name.lower().split():
+            if len(part) >= 4:
+                tokens.add(part)
+    if not tokens:
+        return text
+
+    def _replace(m: re.Match) -> str:
+        if m.group(0).lower() in tokens:
+            return '[REDACTED]'
+        return m.group(0)
+
+    return re.sub(r'\b[A-Za-z]{4,}\b', _replace, text)
+
+
 def hard_safety_sweep(text: str) -> str:
     """
     Final identity wipe — runs after all other passes.
-    Removes any remaining SSNs, long numbers, spaced OCR names,
-    and all-caps name pairs that slipped through earlier passes.
-    Financial values are safe because they are comma-formatted or
-    dollar-prefixed and excluded from the long number pattern.
+    Removes any remaining SSNs, long numbers, suffix-garbage numbers,
+    spaced OCR names, and all-caps name pairs that slipped through.
+    Financial values are safe (comma-formatted or dollar-prefixed).
     """
     text = STRICT_SSN_RE.sub('[REDACTED]', text)
     text = LONG_NUMBER_RE.sub('[REDACTED]', text)
+    text = LONG_NUMBER_WITH_SUFFIX_RE.sub('[REDACTED]', text)
     text = SPACED_NAME_RE.sub('[REDACTED]', text)
     text = ALL_CAPS_NAME_RE.sub(_safe_caps_replace, text)
     return text
@@ -953,14 +989,23 @@ def redact_text(
     name_redacted, _ = redact_client_names(addr_redacted, client_names, name_pattern)
     del addr_redacted
 
-    # Step 9: fuzzy name matching for concatenated/cased variants
-    fuzzy_redacted, _ = redact_fuzzy_names(name_redacted, client_names)
+    # Step 9: normalize text then fuzzy name matching
+    name_ready = normalize_text_for_names(name_redacted)
     del name_redacted
+    fuzzy_redacted, _ = redact_fuzzy_names(name_ready, client_names)
+    del name_ready
 
-    # Step 10: hard safety sweep — paranoid final pass catches anything that
-    # slipped through: stray SSNs, long bare numbers, OCR-spaced names,
-    # all-caps name pairs. Financial values are safe (comma-formatted/shielded).
-    return hard_safety_sweep(fuzzy_redacted)
+    # Step 10: hard safety sweep
+    final = hard_safety_sweep(fuzzy_redacted)
+    del fuzzy_redacted
+
+    # Step 11: aggressive dash cleanup
+    final = nuke_remaining_dash_ids(final)
+
+    # Step 12: remove leftover single-name tokens
+    final = remove_single_name_tokens(final, client_names)
+
+    return final
 
 
 def redact_paragraph(
