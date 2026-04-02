@@ -1036,6 +1036,9 @@ def redact_paragraph(
 # PDF TEXT EXTRACTION
 # ---------------------------------------------------------------------------
 
+PDF_BATCH_SIZE = 25  # pages per batch — keeps peak memory low without disk I/O
+
+
 def _extract_all_pages(pdf_bytes: bytes) -> List[str]:
     """
     Extract text from all pages in one pass.
@@ -1084,14 +1087,25 @@ def _extract_all_pages(pdf_bytes: bytes) -> List[str]:
 
 
 def process_pdf(content: bytes, client_names: List[str]) -> bytes:
-    text_parts = _extract_all_pages(content)
-    full_text = "\n\n".join(text_parts)
-    text_parts.clear()
+    """
+    Process PDF in page batches to cap peak memory usage.
+    Everything stays in memory (io.BytesIO) — nothing is written to disk.
 
-    discovered = extract_names_from_labels(full_text)
-    # FIX: case-insensitive dedup before building pattern
-    seen = set()
-    all_names = []
+    Pass 1: extract all text lightly just for name discovery.
+    Pass 2: extract and redact PDF_BATCH_SIZE pages at a time, accumulating
+            output lines, then build the final PDF once at the end.
+    """
+    # --- Pass 1: lightweight full scan for name discovery ---
+    all_page_texts = _extract_all_pages(content)
+    discovery_text = "\n\n".join(all_page_texts)
+    all_page_texts.clear()
+    gc.collect()
+
+    discovered = extract_names_from_labels(discovery_text)
+    del discovery_text
+
+    seen: set = set()
+    all_names: List[str] = []
     for n in client_names + discovered:
         k = n.strip().lower()
         if k not in seen:
@@ -1100,9 +1114,57 @@ def process_pdf(content: bytes, client_names: List[str]) -> bytes:
 
     name_pattern = build_name_pattern(all_names)
 
-    redacted = redact_text(full_text, all_names, name_pattern)
-    del full_text
+    # --- Pass 2: batched redaction — PDF_BATCH_SIZE pages at a time ---
+    all_redacted_lines: List[str] = []
+    fitz_doc = None
+    buf = io.BytesIO(content)
 
+    try:
+        with pdfplumber.open(buf) as plumber_pdf:
+            total_pages = len(plumber_pdf.pages)
+
+            for batch_start in range(0, total_pages, PDF_BATCH_SIZE):
+                batch_end = min(batch_start + PDF_BATCH_SIZE, total_pages)
+                batch_texts: List[str] = []
+
+                for i in range(batch_start, batch_end):
+                    page = plumber_pdf.pages[i]
+                    text = page.extract_text()
+
+                    if not text or not text.strip():
+                        # fallback to fitz
+                        if fitz_doc is None:
+                            fitz_doc = fitz.open(stream=content, filetype="pdf")
+                        fitz_page = fitz_doc[i]
+                        text = fitz_page.get_text("text")
+
+                        if not text or not text.strip():
+                            try:
+                                tp = fitz_page.get_textpage_ocr(
+                                    flags=fitz.TEXT_PRESERVE_WHITESPACE, dpi=300
+                                )
+                                text = fitz_page.get_text("text", textpage=tp)
+                            except Exception:
+                                text = ""
+
+                    if text:
+                        batch_texts.append(text)
+
+                # Redact this batch and accumulate lines
+                batch_full = "\n\n".join(batch_texts)
+                batch_texts.clear()
+                batch_redacted = redact_text(batch_full, all_names, name_pattern)
+                del batch_full
+                all_redacted_lines.extend(batch_redacted.split("\n"))
+                del batch_redacted
+                gc.collect()
+
+    finally:
+        buf.close()
+        if fitz_doc is not None:
+            fitz_doc.close()
+
+    # --- Build output PDF from accumulated lines — all in memory ---
     buf_out = io.BytesIO()
     try:
         doc = SimpleDocTemplate(
@@ -1116,8 +1178,9 @@ def process_pdf(content: bytes, client_names: List[str]) -> bytes:
                 line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") or "&nbsp;",
                 styles["Normal"],
             )
-            for line in redacted.split("\n")
+            for line in all_redacted_lines
         ]
+        del all_redacted_lines
         doc.build(story)
         return buf_out.getvalue()
     finally:
