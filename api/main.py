@@ -209,6 +209,26 @@ CITY_STATE_RE = re.compile(
 )
 
 
+# SSN fragment cleanup — catches leftover "805-32-" or "NNN-NN-" after partial redaction
+SSN_FRAGMENT_RE = re.compile(
+    r'\b\d{3}[\s\-]\d{2}[\s\-]'                       # NNN-NN- prefix orphaned
+    r'|\b\d{3}[\s\-]\d{2}[\s\-]\[REDACTED\]'          # NNN-NN-[REDACTED]
+    r'|\[REDACTED\][\s\-]\d{2}[\s\-]\d{4}\b'          # [REDACTED]-NN-NNNN suffix
+)
+
+# State abbreviation left exposed after surrounding text was redacted
+# e.g. "[REDACTED] TX [REDACTED]" — the TX itself should go too
+ORPHAN_STATE_RE = re.compile(
+    r'\[REDACTED\]\s+'
+    r'(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI'
+    r'|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT'
+    r'|VT|VA|WA|WV|WI|WY|DC)\b'
+    r'|(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI'
+    r'|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT'
+    r'|VT|VA|WA|WV|WI|WY|DC)\b\s+\[REDACTED\]'
+)
+
+
 def redact_addresses(text: str) -> tuple[str, int]:
     count = [0]
 
@@ -231,7 +251,9 @@ def redact_addresses(text: str) -> tuple[str, int]:
     text = POBOX_RE.sub(_replace, text)
     text = ZIP_RE.sub(_replace, text)
     text = ZIP_9_STATE_RE.sub(_replace_labeled, text)  # 9-digit ZIP+4 after state abbrev
-    text = CITY_STATE_RE.sub(_replace, text)  # catches "Coppell TX" style
+    text = CITY_STATE_RE.sub(_replace, text)           # catches "Coppell TX" style
+    text = ORPHAN_STATE_RE.sub(_replace, text)         # catches state left after Presidio redacts city
+    text = SSN_FRAGMENT_RE.sub(_replace, text)         # clean up partial SSN fragments
     return text, count[0]
 
 
@@ -796,6 +818,65 @@ def redact_client_names(
 
 
 # ---------------------------------------------------------------------------
+# HARD SAFETY LAYER — final sweep before output
+#
+# These run AFTER all other passes as a last-resort identity wipe.
+# Designed to be safe for financial data by using context-aware patterns
+# rather than nuking all capitalized words.
+# ---------------------------------------------------------------------------
+
+# Paranoid SSN sweep — catches any remaining NNN-NN-NNNN variants
+# including those with spaces instead of dashes
+STRICT_SSN_RE = re.compile(r'\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b')
+
+# Long number sweep — catches 8+ digit bare numbers that are not
+# financial figures (financial values are comma-formatted or dollar-prefixed
+# and are already restored from __FIN_N__ tokens before this runs)
+# Excludes numbers immediately preceded by $ or followed by , or . to
+# avoid hitting any unshielded financial figures
+LONG_NUMBER_RE = re.compile(r'(?<!\$)(?<!\d)\b\d{8,}\b(?!\d)(?![,.])')
+
+# Spaced-letter names from OCR artifacts — e.g. "J a m e s" or "N I R P E S H"
+SPACED_NAME_RE = re.compile(r'(?:[A-Z]\s){2,}[A-Z]')
+
+# All-caps two-word names — e.g. "NIRPESH REGMI", "JAMES SMITH"
+# Requires both words 3+ chars to avoid hitting abbreviations like "IRS PDF"
+ALL_CAPS_NAME_RE = re.compile(r'\b[A-Z]{3,}\s+[A-Z]{3,}\b')
+
+# Tax document safe words — capitalized terms that are NOT names
+# Used to whitelist before the all-caps pass
+_TAX_SAFE_WORDS = {
+    'IRS', 'AGI', 'SSN', 'EIN', 'TIN', 'HSA', 'IRA', 'LLC', 'USA', 'ACH',
+    'RTP', 'PIN', 'MBI', 'NPI', 'PDF', 'HOH', 'MFS', 'QSS', 'EIC', 'ACTC',
+    'ERPS', 'HDHP', 'RRTA', 'USOC', 'ABLE', 'PTIN', 'ATTN', 'CUSIP',
+    'CALL', 'PUTS', 'ETF', 'COM', 'INC', 'LTD', 'SEC', 'AAA',
+}
+
+
+def _safe_caps_replace(m: re.Match) -> str:
+    """Replace all-caps pairs unless both words are known tax abbreviations."""
+    words = m.group(0).split()
+    if all(w in _TAX_SAFE_WORDS for w in words):
+        return m.group(0)
+    return '[REDACTED]'
+
+
+def hard_safety_sweep(text: str) -> str:
+    """
+    Final identity wipe — runs after all other passes.
+    Removes any remaining SSNs, long numbers, spaced OCR names,
+    and all-caps name pairs that slipped through earlier passes.
+    Financial values are safe because they are comma-formatted or
+    dollar-prefixed and excluded from the long number pattern.
+    """
+    text = STRICT_SSN_RE.sub('[REDACTED]', text)
+    text = LONG_NUMBER_RE.sub('[REDACTED]', text)
+    text = SPACED_NAME_RE.sub('[REDACTED]', text)
+    text = ALL_CAPS_NAME_RE.sub(_safe_caps_replace, text)
+    return text
+
+
+# ---------------------------------------------------------------------------
 # CORE REDACTION PIPELINE
 #
 # Execution order:
@@ -869,7 +950,10 @@ def redact_text(
     fuzzy_redacted, _ = redact_fuzzy_names(name_redacted, client_names)
     del name_redacted
 
-    return fuzzy_redacted
+    # Step 10: hard safety sweep — paranoid final pass catches anything that
+    # slipped through: stray SSNs, long bare numbers, OCR-spaced names,
+    # all-caps name pairs. Financial values are safe (comma-formatted/shielded).
+    return hard_safety_sweep(fuzzy_redacted)
 
 
 def redact_paragraph(
