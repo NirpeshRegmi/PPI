@@ -209,11 +209,12 @@ CITY_STATE_RE = re.compile(
 )
 
 
-# SSN fragment cleanup — catches leftover "805-32-" or "NNN-NN-" after partial redaction
+# SSN fragment cleanup — catches leftover SSN pieces after partial redaction.
+# IMPORTANT: longer branches must come first so regex consumes the full fragment.
 SSN_FRAGMENT_RE = re.compile(
-    r'\b\d{3}[\s\-]\d{2}[\s\-]?(?=\[REDACTED\]|$|\s)'  # NNN-NN- prefix with optional trailing sep
-    r'|\b\d{3}[\s\-]\d{2}[\s\-]\[REDACTED\]'            # NNN-NN-[REDACTED]
+    r'\b\d{3}[\s\-]\d{2}[\s\-]\[REDACTED\]'             # NNN-NN-[REDACTED]  — longest, first
     r'|\[REDACTED\][\s\-]\d{2}[\s\-]\d{4}\b'            # [REDACTED]-NN-NNNN suffix
+    r'|\b\d{3}[\s\-]\d{2}[\s\-]?(?=\[REDACTED\]|$|\s)'  # NNN-NN- bare prefix — shortest, last
 )
 
 # Catches a 9-digit number immediately after a [REDACTED] block —
