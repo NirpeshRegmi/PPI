@@ -168,6 +168,15 @@ POBOX_RE = re.compile(r'\bP\.?\s*O\.?\s*Box\s+\d+\b', re.IGNORECASE)
 
 ZIP_RE = re.compile(r'\b\d{5}(?:-\d{4})?\b')
 
+# 9-digit ZIP+4 without dash — only redact when preceded by a state abbreviation
+# to avoid hitting financial figures, routing numbers, or account numbers.
+# e.g. "TX 750193679" or "ND 582027155" — but NOT bare "031176110"
+ZIP_9_STATE_RE = re.compile(
+    r'\b(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI'
+    r'|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT'
+    r'|VT|VA|WA|WV|WI|WY|DC)\s{0,2}(\d{9})\b'
+)
+
 _ADDRESS_LABELS = {
     'AddressNumber', 'StreetName', 'StreetNamePostType',
     'StreetNamePreType', 'StreetNamePreDirectional', 'StreetNamePostDirectional',
@@ -187,6 +196,17 @@ def _usaddress_confirms(span: str) -> bool:
         return False
     except usaddress.RepeatedLabelError:
         return True
+
+
+# City + state abbreviation pattern — catches "Coppell TX", "Coppell, TX"
+# that Presidio's LOCATION entity sometimes misses.
+CITY_STATE_RE = re.compile(
+    r'\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})'
+    r'[,\s]+'
+    r'(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI'
+    r'|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT'
+    r'|VT|VA|WA|WV|WI|WY|DC)\b',
+)
 
 
 def redact_addresses(text: str) -> tuple[str, int]:
@@ -210,6 +230,8 @@ def redact_addresses(text: str) -> tuple[str, int]:
     text = RURAL_ROUTE_RE.sub(_replace, text)
     text = POBOX_RE.sub(_replace, text)
     text = ZIP_RE.sub(_replace, text)
+    text = ZIP_9_STATE_RE.sub(_replace_labeled, text)  # 9-digit ZIP+4 after state abbrev
+    text = CITY_STATE_RE.sub(_replace, text)  # catches "Coppell TX" style
     return text, count[0]
 
 
@@ -279,7 +301,7 @@ SSN_RE = re.compile(
     r'(?!00)(?P<group>\d{2})'
     r'(?P=sep1)'
     r'(?!0000)(?P<serial>\d{4})'
-    r'\b'
+    r'(?!\d)'  # not followed by another digit, but allow trailing letters/punctuation
 )
 
 EIN_RE = re.compile(r'\b(?:0[1-9]|[1-9]\d)-\d{7}\b')
@@ -311,9 +333,10 @@ BROKERAGE_ACCOUNT_RE = re.compile(
 )
 
 BROKERAGE_CONTEXT_RE = re.compile(
-    r'(?:account|acct|portfolio|position|holding|registration|statement)\b'
+    r'(?:account|acct|portfolio|position|holding|registration|statement'
+    r'|routing|rtn|direct\s+deposit|checking|savings|bank)\b'
     r'.{0,40}'
-    r'\b(\d{8,12})\b',
+    r'\b(\d{8,17})\b',
     re.IGNORECASE,
 )
 
@@ -323,11 +346,12 @@ MASKED_ACCOUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Phone numbers not caught by Presidio — catches (555) 867-5309, 555.867.5309 etc.
+# Phone numbers not caught by Presidio — catches (555) 867-5309, 555.867.5309,
+# and no-separator variants like (555)867-5309
 PHONE_RE = re.compile(
     r'(?<!\d)'
     r'(?:\+?1[\s\-.])?'
-    r'(?:\(?\d{3}\)?[\s\-.])'
+    r'(?:\(?\d{3}\)?[\s\-.]?)'   # separator after area code now optional
     r'\d{3}[\s\-.]'
     r'\d{4}'
     r'(?!\d)'
@@ -366,8 +390,12 @@ NPI_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ---------------------------------------------------------------------------
-# DASHED NUMBER / ID PATTERN REDACTION  (additive — new feature)
+# Identity Protection PIN (IP PIN) — 6-digit IRS anti-fraud PIN
+# Allows intervening text between label and number (e.g. "enter it here")
+IP_PIN_RE = re.compile(
+    r'(?:ip\s*pin|identity\s+protection\s+pin)[^0-9]{0,40}?(\d{6})\b',
+    re.IGNORECASE,
+)
 # Catches digit-containing dash-separated IDs not already caught above.
 # Skips: dates (MM-DD-YYYY etc.), EINs (already redacted), plain words.
 # Examples caught:  000-000-000 / 123-4567-89 / AB-12345 / 9-8765-4321
@@ -526,6 +554,9 @@ def redact_sensitive_ids(text: str) -> tuple[str, int]:
 
     # Pass 15: NPI
     text = NPI_RE.sub(_replace_labeled, text)
+
+    # Pass 16: Identity Protection PIN (IP PIN) — 6-digit IRS anti-fraud PIN
+    text = IP_PIN_RE.sub(_replace_labeled, text)
 
     return text, count[0]
 
@@ -767,16 +798,18 @@ def redact_client_names(
 # ---------------------------------------------------------------------------
 # CORE REDACTION PIPELINE
 #
-# FIX: Corrected execution order:
-#   1. redact_sensitive_ids  — runs first on raw text so digit patterns
-#      are intact (shield_financials can fragment SSN/EIN digit sequences)
-#   2. shield_financials     — protects dollar amounts, percentages, tax
+# Execution order:
+#   1. redact_dashed_numbers — runs first on raw text so dash-separated IDs
+#      are intact before SSN/EIN passes can fragment them (e.g. 805-32-3431ms)
+#   2. redact_sensitive_ids  — SSN, EIN, cards, phones, email etc. on text
+#      where dashed IDs are already gone
+#   3. shield_financials     — protects dollar amounts, percentages, tax
 #      years before Presidio sees the text
-#   3. Presidio              — NER pass on shielded text (offsets are now
-#      valid since no prior substitution has changed text length arbitrarily)
-#   4. restore_financials    — bring back shielded values
-#   5. redact_addresses      — address patterns after financial restore
-#   6. redact_client_names   — name patterns last
+#   4. Presidio              — NER pass on shielded text
+#   5. restore_financials    — bring back shielded values
+#   6. redact_addresses      — address patterns after financial restore
+#   7. redact_client_names   — exact + inline name patterns
+#   8. redact_fuzzy_names    — fuzzy name matching for concatenated variants
 # ---------------------------------------------------------------------------
 
 def redact_text(
@@ -785,14 +818,19 @@ def redact_text(
     name_pattern: Optional[re.Pattern] = None,
 ) -> str:
 
-    # Step 1: sensitive ID redaction on raw text (SSN, EIN, cards, phones, email…)
-    id_redacted, _ = redact_sensitive_ids(text)
+    # Step 1: dashed number IDs on raw text — must run before sensitive_ids
+    # so patterns like 805-32-3431 are seen intact, not pre-fragmented
+    dash_redacted, _ = redact_dashed_numbers(text)
 
-    # Step 2: shield financial values so Presidio can't destroy them
+    # Step 2: sensitive ID redaction (SSN, EIN, cards, phones, email…)
+    id_redacted, _ = redact_sensitive_ids(dash_redacted)
+    del dash_redacted
+
+    # Step 3: shield financial values so Presidio can't destroy them
     shielded, placeholder_map = shield_financials(id_redacted)
     del id_redacted
 
-    # Step 3: Presidio NER pass — text is now shielded so offsets are stable
+    # Step 4: Presidio NER pass — text is now shielded so offsets are stable
     analysis_results = analyzer.analyze(
         text=shielded,
         entities=PII_ENTITIES,
@@ -806,28 +844,23 @@ def redact_text(
     del shielded
     del analysis_results
 
-    # Step 4: restore financial tokens
+    # Step 5: restore financial tokens
     restored = restore_financials(anonymized.text, placeholder_map)
     del anonymized
     del placeholder_map
 
-    # Step 5: address redaction
+    # Step 6: address redaction
     addr_redacted, _ = redact_addresses(restored)
     del restored
 
-    # Step 6: name redaction
+    # Step 7: name redaction
     name_redacted, _ = redact_client_names(addr_redacted, client_names, name_pattern)
     del addr_redacted
 
-    # Step 7 (additive): dashed numeric/alphanumeric ID patterns
-    # e.g. 000-000-000, 123-4567, AB-9876-54 — skips dates and financial tokens
-    dash_redacted, _ = redact_dashed_numbers(name_redacted)
-    del name_redacted
-
-    # Step 8 (additive): fuzzy name matching for concatenated/cased variants
+    # Step 8: fuzzy name matching for concatenated/cased variants
     # e.g. "jamesjackson", "JamesJackson", "JACKSONJAMES" at >= 70% similarity
-    fuzzy_redacted, _ = redact_fuzzy_names(dash_redacted, client_names)
-    del dash_redacted
+    fuzzy_redacted, _ = redact_fuzzy_names(name_redacted, client_names)
+    del name_redacted
 
     return fuzzy_redacted
 
