@@ -801,15 +801,15 @@ def redact_client_names(
 # Execution order:
 #   1. redact_dashed_numbers — runs first on raw text so dash-separated IDs
 #      are intact before SSN/EIN passes can fragment them (e.g. 805-32-3431ms)
-#   2. redact_sensitive_ids  — SSN, EIN, cards, phones, email etc. on text
-#      where dashed IDs are already gone
-#   3. shield_financials     — protects dollar amounts, percentages, tax
-#      years before Presidio sees the text
-#   4. Presidio              — NER pass on shielded text
-#   5. restore_financials    — bring back shielded values
-#   6. redact_addresses      — address patterns after financial restore
-#   7. redact_client_names   — exact + inline name patterns
-#   8. redact_fuzzy_names    — fuzzy name matching for concatenated variants
+#   2. redact_addresses      — runs on raw text BEFORE Presidio so city/state
+#      patterns like "Coppell TX" are seen intact and not fragmented by NER
+#   3. redact_sensitive_ids  — SSN, EIN, cards, phones, email etc.
+#   4. shield_financials     — protects dollar amounts, percentages, tax years
+#   5. Presidio              — NER pass on shielded text
+#   6. restore_financials    — bring back shielded values
+#   7. redact_addresses      — second pass to catch anything Presidio exposed
+#   8. redact_client_names   — exact + inline name patterns
+#   9. redact_fuzzy_names    — fuzzy name matching for concatenated variants
 # ---------------------------------------------------------------------------
 
 def redact_text(
@@ -818,47 +818,54 @@ def redact_text(
     name_pattern: Optional[re.Pattern] = None,
 ) -> str:
 
-    # Step 1: dashed number IDs on raw text — must run before sensitive_ids
-    # so patterns like 805-32-3431 are seen intact, not pre-fragmented
-    dash_redacted, _ = redact_dashed_numbers(text)
+    # Step 1: shield financial values FIRST — protects dollar amounts,
+    # percentages, and tax years throughout the ENTIRE pipeline including
+    # the early address and ID passes. This prevents ZIP_RE from hitting
+    # bare 5-digit financial figures like 15750 or 29685.
+    shielded_early, placeholder_map = shield_financials(text)
 
-    # Step 2: sensitive ID redaction (SSN, EIN, cards, phones, email…)
-    id_redacted, _ = redact_sensitive_ids(dash_redacted)
+    # Step 2: dashed number IDs — must run before sensitive_ids
+    # so patterns like 805-32-3431 are seen intact, not pre-fragmented
+    dash_redacted, _ = redact_dashed_numbers(shielded_early)
+    del shielded_early
+
+    # Step 3: address redaction BEFORE Presidio so city/state patterns
+    # like "Coppell TX" are seen intact and not fragmented by NER
+    addr_pre, _ = redact_addresses(dash_redacted)
     del dash_redacted
 
-    # Step 3: shield financial values so Presidio can't destroy them
-    shielded, placeholder_map = shield_financials(id_redacted)
-    del id_redacted
+    # Step 4: sensitive ID redaction (SSN, EIN, cards, phones, email…)
+    id_redacted, _ = redact_sensitive_ids(addr_pre)
+    del addr_pre
 
-    # Step 4: Presidio NER pass — text is now shielded so offsets are stable
+    # Step 5: Presidio NER pass — text is shielded so financial offsets stable
     analysis_results = analyzer.analyze(
-        text=shielded,
+        text=id_redacted,
         entities=PII_ENTITIES,
         language="en",
     )
     anonymized = anonymizer.anonymize(
-        text=shielded,
+        text=id_redacted,
         analyzer_results=analysis_results,
         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[REDACTED]"})},
     )
-    del shielded
+    del id_redacted
     del analysis_results
 
-    # Step 5: restore financial tokens
+    # Step 6: restore financial tokens
     restored = restore_financials(anonymized.text, placeholder_map)
     del anonymized
     del placeholder_map
 
-    # Step 6: address redaction
+    # Step 7: second address pass — catches anything Presidio may have exposed
     addr_redacted, _ = redact_addresses(restored)
     del restored
 
-    # Step 7: name redaction
+    # Step 8: name redaction
     name_redacted, _ = redact_client_names(addr_redacted, client_names, name_pattern)
     del addr_redacted
 
-    # Step 8: fuzzy name matching for concatenated/cased variants
-    # e.g. "jamesjackson", "JamesJackson", "JACKSONJAMES" at >= 70% similarity
+    # Step 9: fuzzy name matching for concatenated/cased variants
     fuzzy_redacted, _ = redact_fuzzy_names(name_redacted, client_names)
     del name_redacted
 
