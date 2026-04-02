@@ -2,6 +2,7 @@ import gc
 import io
 import re
 import base64
+import difflib
 from typing import List, Optional
 
 import fitz  # pymupdf
@@ -365,6 +366,59 @@ NPI_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# DASHED NUMBER / ID PATTERN REDACTION  (additive — new feature)
+# Catches digit-containing dash-separated IDs not already caught above.
+# Skips: dates (MM-DD-YYYY etc.), EINs (already redacted), plain words.
+# Examples caught:  000-000-000 / 123-4567-89 / AB-12345 / 9-8765-4321
+# Examples skipped: 2024-01-15 / 01-23-2024 / Q1-2024 / hello-world
+# ---------------------------------------------------------------------------
+
+_DASHED_DATE_RE = re.compile(
+    r'\b(?:20[0-2]\d|19\d{2})[-/](?:0?[1-9]|1[0-2])[-/](?:0?[1-9]|[12]\d|3[01])\b'
+    r'|\b(?:0?[1-9]|1[0-2])[-/](?:0?[1-9]|[12]\d|3[01])[-/](?:20[0-2]\d|19\d{2})\b'
+    r'|\bQ[1-4][-\s](?:20[0-2]\d)\b',
+    re.IGNORECASE,
+)
+
+DASHED_NUMBER_RE = re.compile(
+    r'\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b'
+)
+
+
+def redact_dashed_numbers(text: str) -> tuple[str, int]:
+    """
+    Redact dash-separated alphanumeric IDs that contain at least one digit
+    and are not dates, EINs, or purely alphabetic hyphenated words.
+    Runs AFTER shield_financials so __FIN_N__ tokens are never touched.
+    """
+    count = [0]
+
+    # Collect spans that are date-like or EIN-like so we can skip them
+    skip_spans: set = set()
+    for m in _DASHED_DATE_RE.finditer(text):
+        skip_spans.add((m.start(), m.end()))
+    for m in EIN_RE.finditer(text):
+        skip_spans.add((m.start(), m.end()))
+
+    def _replace(m: re.Match) -> str:
+        span = (m.start(), m.end())
+        if span in skip_spans:
+            return m.group(0)
+        val = m.group(0)
+        # Must contain at least one digit
+        if not any(c.isdigit() for c in val):
+            return val
+        # Skip __FIN_N__ placeholders (shielded financial tokens)
+        if val.startswith('__FIN_'):
+            return val
+        count[0] += 1
+        return "[REDACTED]"
+
+    result = DASHED_NUMBER_RE.sub(_replace, text)
+    return result, count[0]
+
+
 # Pre-compiled strip pattern for card digit extraction
 _STRIP_RE = re.compile(r'[\s\-]')
 
@@ -623,6 +677,72 @@ def build_name_pattern(names: List[str]) -> Optional[re.Pattern]:
     return re.compile(r'\b' + pattern + r'\b', re.IGNORECASE)
 
 
+def _build_name_combos(names: List[str]) -> List[str]:
+    """
+    Build all concatenated combinations of name parts (no spaces, no case).
+    e.g. "James Jackson" → ["jamesjackson", "jacksonjames"]
+    Also includes individual parts so "Jackson" alone still fuzzy-matches.
+    """
+    combos: List[str] = []
+    for name in names:
+        parts = [p.strip(".,'-").lower() for p in name.split() if p.strip(".,'-")]
+        if not parts:
+            continue
+        # individual parts
+        combos.extend(parts)
+        # full concatenation in original order
+        combos.append("".join(parts))
+        # reverse order (last-first)
+        if len(parts) >= 2:
+            combos.append("".join(reversed(parts)))
+        # all permutations for middle-name combos
+        if len(parts) == 3:
+            combos.append(parts[0] + parts[2])          # first + last
+            combos.append(parts[2] + parts[0])          # last + first
+            combos.append(parts[0] + parts[1] + parts[2])
+            combos.append(parts[2] + parts[1] + parts[0])
+    # deduplicate, keep only combos >= 4 chars to avoid short false positives
+    seen: set = set()
+    result: List[str] = []
+    for c in combos:
+        if c not in seen and len(c) >= 4:
+            seen.add(c)
+            result.append(c)
+    return result
+
+
+def redact_fuzzy_names(text: str, names: List[str], threshold: float = 0.70) -> tuple[str, int]:
+    """
+    Scan every whitespace-delimited token in text.
+    If the lowercased token matches any name combo at >= threshold similarity,
+    replace the whole token with [REDACTED].
+    This catches concatenated variants like "jamesjackson", "JamesJackson",
+    "JACKSONJAMES", etc.
+    """
+    if not names:
+        return text, 0
+
+    combos = _build_name_combos(names)
+    if not combos:
+        return text, 0
+
+    count = [0]
+
+    def _replace_token(m: re.Match) -> str:
+        token = m.group(0)
+        token_lower = token.lower()
+        for combo in combos:
+            ratio = difflib.SequenceMatcher(None, token_lower, combo).ratio()
+            if ratio >= threshold:
+                count[0] += 1
+                return "[REDACTED]"
+        return token
+
+    # Match word-like tokens (letters only, or letters+digits for mixed names)
+    result = re.sub(r'\b[A-Za-z][A-Za-z0-9]{3,}\b', _replace_token, text)
+    return result, count[0]
+
+
 def redact_client_names(
     text: str,
     names: List[str],
@@ -699,7 +819,17 @@ def redact_text(
     name_redacted, _ = redact_client_names(addr_redacted, client_names, name_pattern)
     del addr_redacted
 
-    return name_redacted
+    # Step 7 (additive): dashed numeric/alphanumeric ID patterns
+    # e.g. 000-000-000, 123-4567, AB-9876-54 — skips dates and financial tokens
+    dash_redacted, _ = redact_dashed_numbers(name_redacted)
+    del name_redacted
+
+    # Step 8 (additive): fuzzy name matching for concatenated/cased variants
+    # e.g. "jamesjackson", "JamesJackson", "JACKSONJAMES" at >= 70% similarity
+    fuzzy_redacted, _ = redact_fuzzy_names(dash_redacted, client_names)
+    del dash_redacted
+
+    return fuzzy_redacted
 
 
 def redact_paragraph(
