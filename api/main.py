@@ -211,21 +211,25 @@ CITY_STATE_RE = re.compile(
 
 # SSN fragment cleanup — catches leftover "805-32-" or "NNN-NN-" after partial redaction
 SSN_FRAGMENT_RE = re.compile(
-    r'\b\d{3}[\s\-]\d{2}[\s\-]'                       # NNN-NN- prefix orphaned
-    r'|\b\d{3}[\s\-]\d{2}[\s\-]\[REDACTED\]'          # NNN-NN-[REDACTED]
-    r'|\[REDACTED\][\s\-]\d{2}[\s\-]\d{4}\b'          # [REDACTED]-NN-NNNN suffix
+    r'\b\d{3}[\s\-]\d{2}[\s\-]?(?=\[REDACTED\]|$|\s)'  # NNN-NN- prefix with optional trailing sep
+    r'|\b\d{3}[\s\-]\d{2}[\s\-]\[REDACTED\]'            # NNN-NN-[REDACTED]
+    r'|\[REDACTED\][\s\-]\d{2}[\s\-]\d{4}\b'            # [REDACTED]-NN-NNNN suffix
 )
 
+# Catches a 9-digit number immediately after a [REDACTED] block —
+# handles the case where CITY_STATE_RE consumed the state abbrev before
+# ZIP_9_STATE_RE could use it as context (e.g. "[REDACTED] 750193679")
+REDACTED_PLUS_9_RE = re.compile(r'\[REDACTED\]\s+(\d{9})\b')
+
 # State abbreviation left exposed after surrounding text was redacted
-# e.g. "[REDACTED] TX [REDACTED]" — the TX itself should go too
 ORPHAN_STATE_RE = re.compile(
-    r'\[REDACTED\]\s+'
+    r'\[REDACTED\]\s*'
     r'(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI'
     r'|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT'
     r'|VT|VA|WA|WV|WI|WY|DC)\b'
     r'|(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI'
     r'|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT'
-    r'|VT|VA|WA|WV|WI|WY|DC)\b\s+\[REDACTED\]'
+    r'|VT|VA|WA|WV|WI|WY|DC)\b\s*\[REDACTED\]'
 )
 
 
@@ -250,9 +254,11 @@ def redact_addresses(text: str) -> tuple[str, int]:
     text = RURAL_ROUTE_RE.sub(_replace, text)
     text = POBOX_RE.sub(_replace, text)
     text = ZIP_RE.sub(_replace, text)
-    text = ZIP_9_STATE_RE.sub(_replace_labeled, text)  # 9-digit ZIP+4 after state abbrev
+    text = ZIP_9_STATE_RE.sub(_replace_labeled, text)  # must run BEFORE CITY_STATE_RE
+                                                        # so state abbrev context is still present
     text = CITY_STATE_RE.sub(_replace, text)           # catches "Coppell TX" style
-    text = ORPHAN_STATE_RE.sub(_replace, text)         # catches state left after Presidio redacts city
+    text = REDACTED_PLUS_9_RE.sub('[REDACTED]', text)  # fallback: [REDACTED] + bare 9-digit
+    text = ORPHAN_STATE_RE.sub(_replace, text)         # catches state left after city was redacted
     text = SSN_FRAGMENT_RE.sub(_replace, text)         # clean up partial SSN fragments
     return text, count[0]
 
