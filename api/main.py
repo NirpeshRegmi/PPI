@@ -261,7 +261,7 @@ def redact_addresses(text: str) -> tuple[str, int]:
     text = RURAL_ROUTE_RE.sub(_replace, text)
     text = POBOX_RE.sub(_replace, text)
     text = ZIP_RE.sub(_replace, text)
-    text = ZIP_9_STATE_RE.sub(_replace_labeled, text)  # must run BEFORE CITY_STATE_RE
+    text = ZIP_9_STATE_RE.sub(_replace_labeled_simple, text)  # must run BEFORE CITY_STATE_RE
                                                         # so state abbrev context is still present
     text = CITY_STATE_RE.sub(_replace, text)           # catches "Coppell TX" style
     text = REDACTED_PLUS_9_RE.sub('[REDACTED]', text)  # fallback: [REDACTED] + bare 9-digit
@@ -505,6 +505,15 @@ def _luhn(number: str) -> bool:
     odd = digits[-1::-2]
     even = [d*2 - 9 if d*2 > 9 else d*2 for d in digits[-2::-2]]
     return (sum(odd) + sum(even)) % 10 == 0
+
+
+def _replace_labeled_simple(m: re.Match) -> str:
+    """Module-level replace_labeled — redacts last capture group, keeps surrounding text.
+    Used by redact_addresses and other callers outside redact_sensitive_ids."""
+    grp_idx = len(m.groups())
+    start = m.start(grp_idx)
+    end = m.end(grp_idx)
+    return m.group(0)[: start - m.start()] + "[REDACTED]" + m.group(0)[end - m.start():]
 
 
 def redact_sensitive_ids(text: str) -> tuple[str, int]:
