@@ -9,8 +9,8 @@ services:
     depends_on:
       api1:
         condition: service_healthy
-      api2:
-        condition: service_healthy
+      # api2:
+      #   condition: service_healthy
     restart: unless-stopped
     mem_limit: 256m
 
@@ -19,7 +19,7 @@ services:
     expose:
       - "8000"
     restart: unless-stopped
-    mem_limit: 4g
+    mem_limit: 8g
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -27,15 +27,15 @@ services:
       retries: 5
       start_period: 60s
 
-  api2:
-    build: ./api
-    expose:
-      - "8000"
-    restart: unless-stopped
-    mem_limit: 4g
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+  # api2:
+  #   build: ./api
+  #   expose:
+  #     - "8000"
+  #   restart: unless-stopped
+  #   mem_limit: 4g
+  #   healthcheck:
+  #     test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 60s
